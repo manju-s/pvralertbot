@@ -33,7 +33,7 @@ const PVR_API_HEADERS = {
     'sec-fetch-dest': 'empty',
     'sec-fetch-mode': 'cors',
     'sec-fetch-site': 'same-site',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
 };
 
 // A simple in-memory store to manage user conversation states
@@ -125,11 +125,7 @@ async function findShowtimes(movieId, targetDate, targetCinema) {
         const relevantShows = [];
         const cinemaData = sessions.find(s => s.cinema.name.toLowerCase().includes(targetCinemaLower));
 
-        if (!cinemaData) {
-            return { error: 'cinema_not_found' };
-        }
-
-        cinemaData.experienceSessions.forEach(exp => {
+        cinemaData?.experienceSessions?.forEach(exp => {
             exp.shows.forEach(show => {
                 if (show.showDateStr === targetDate) {
                     relevantShows.push(show.showTime);
