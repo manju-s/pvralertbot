@@ -12,7 +12,7 @@
     "movie",
     "api"
   ],
-  "author": "",
+  "author": "MANJU",
   "license": "ISC",
   "dependencies": {
     "axios": "^1.6.8",

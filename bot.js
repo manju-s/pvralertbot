@@ -3,6 +3,7 @@ require('dotenv').config();
 
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
+const fs = require('fs/promises'); // Using the promises version of the file system module
 
 // Get the Telegram Bot Token from the .env file
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -38,8 +39,38 @@ const PVR_API_HEADERS = {
 
 // A simple in-memory store to manage user conversation states
 const userStates = {};
-// A simple in-memory store for active alerts.
-const activeAlerts = {};
+
+// --- Persistent Alert Storage ---
+const ALERTS_FILE_PATH = 'activeAlerts.json';
+let activeAlerts = {}; // Changed to 'let' to allow it to be reassigned on load
+
+/**
+ * Saves the current state of activeAlerts to a JSON file.
+ */
+async function saveAlertsToFile() {
+    try {
+        await fs.writeFile(ALERTS_FILE_PATH, JSON.stringify(activeAlerts, null, 2), 'utf8');
+    } catch (error) {
+        console.error("Error saving alerts to file:", error);
+    }
+}
+
+/**
+ * Loads alerts from the JSON file into memory when the bot starts.
+ */
+async function loadAlertsFromFile() {
+    try {
+        const data = await fs.readFile(ALERTS_FILE_PATH, 'utf8');
+        activeAlerts = JSON.parse(data);
+        console.log(`✅ Successfully loaded alerts for ${Object.keys(activeAlerts).length} users from ${ALERTS_FILE_PATH}.`);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.log("`activeAlerts.json` not found. Starting fresh. The file will be created when the first alert is set.");
+        } else {
+            console.error("Error loading alerts from file:", error);
+        }
+    }
+}
 
 
 /**
@@ -65,7 +96,7 @@ async function findMovie(movieName) {
         return foundMovie || null;
 
     } catch (error) {
-        console.error("Error in findMovie:", error.message);
+        console.error("Error in findMovie:", error.response ? error.response.status : error.message);
         return null;
     }
 }
@@ -84,7 +115,7 @@ async function findComingSoonMovie(movieName) {
             console.error("Could not find a valid movie array in the coming soon API response.");
             return null;
         }
-        
+
         const searchTerm = movieName.toLowerCase().trim();
         const foundMovie = movies.find(movie =>
             movie.filmName.toLowerCase().includes(searchTerm) && movie.movieType === 'UPCOMING'
@@ -93,7 +124,7 @@ async function findComingSoonMovie(movieName) {
         return foundMovie || null;
 
     } catch (error) {
-        console.error("Error in findComingSoonMovie:", error.message);
+        console.error("Error in findComingSoonMovie:", error.response ? error.response.status : error.message);
         return null;
     }
 }
@@ -110,7 +141,7 @@ async function findShowtimes(movieId, targetDate, targetCinema) {
         city: "Bengaluru",
         mid: movieId,
         experience: "ALL", specialTag: "ALL", lat: "12.915336", lng: "77.373046",
-        lang: "ALL", format: "ALL", dated: targetDate ? targetDate : new Date().toISOString().slice(0,10), time: "08:00-24:00",
+        lang: "ALL", format: "ALL", dated: targetDate ? targetDate : new Date().toISOString().slice(0, 10), time: "08:00-24:00",
         cinetype: "ALL", hc: "ALL", adFree: false
     };
 
@@ -124,6 +155,10 @@ async function findShowtimes(movieId, targetDate, targetCinema) {
         const targetCinemaLower = targetCinema.toLowerCase().trim();
         const relevantShows = [];
         const cinemaData = sessions.find(s => s.cinema.name.toLowerCase().includes(targetCinemaLower));
+
+        if (!cinemaData) {
+            return { error: 'cinema_not_found' };
+        }
 
         cinemaData?.experienceSessions?.forEach(exp => {
             exp.shows.forEach(show => {
@@ -143,7 +178,7 @@ async function findShowtimes(movieId, targetDate, targetCinema) {
         };
 
     } catch (error) {
-        console.error("Error in findShowtimes:", error.message);
+        console.error("Error in findShowtimes:", error.response ? error.response.status : error.message);
         return null;
     }
 }
@@ -153,7 +188,7 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
-    if (text.startsWith('/')) {
+    if (!text || text.startsWith('/')) {
         return;
     }
 
@@ -199,8 +234,20 @@ bot.on('message', async (msg) => {
         }
         return;
     }
+});
 
-    bot.sendMessage(chatId, 'Welcome to the Movie Ticket Alert Bot! 👋\n\nTo check if a movie is available, use the /check command followed by the movie name.\n\nFor example:\n/check Fighter');
+// Listen for the /start or /help command for a welcome message
+bot.onText(/\/start|\/help/, (msg) => {
+    const chatId = msg.chat.id;
+    const welcomeMessage = `Welcome to the Movie Ticket Alert Bot! 👋
+
+Here's how to use me:
+• Check for a movie: \`/check <movie name>\`
+  (e.g., \`/check Fighter\`)
+
+• See your active alerts: \`/myalerts\`
+    `;
+    bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
 });
 
 
@@ -248,6 +295,27 @@ bot.onText(/\/check (.+)/, async (msg, match) => {
         bot.sendMessage(chatId, notFoundMessage, options);
     }
 });
+
+// Listen for the /myalerts command
+bot.onText(/\/myalerts/, (msg) => {
+    const chatId = msg.chat.id;
+    const userAlerts = activeAlerts[chatId];
+
+    if (!userAlerts || userAlerts.length === 0) {
+        bot.sendMessage(chatId, "You have no active alerts set. 🤷‍♂️");
+        return;
+    }
+
+    let message = "🔔 *Here are your active alerts:*\n\n";
+    userAlerts.forEach((alert, index) => {
+        message += `*${index + 1}.* *Movie:* ${alert.movieName}\n`;
+        message += `   *Cinema:* ${alert.cinemaName}\n`;
+        message += `   *Date:* ${alert.date}\n\n`;
+    });
+
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+});
+
 
 // Listen for button clicks
 bot.on('callback_query', async (callbackQuery) => {
@@ -324,6 +392,8 @@ bot.on('callback_query', async (callbackQuery) => {
             date: alertDetails.date, cinemaName: alertDetails.cinemaName
         });
 
+        await saveAlertsToFile(); // Save after adding an alert
+
         bot.editMessageText(`✅ Alert set! I will notify you when tickets for *${alertDetails.movieName}* become available at *${alertDetails.cinemaName}* on *${alertDetails.date}*.`, {
             chat_id: chatId, message_id: msg.message_id, parse_mode: 'Markdown'
         });
@@ -340,58 +410,93 @@ bot.on('callback_query', async (callbackQuery) => {
 });
 
 /**
- * Periodically checks all active alerts by calling the API.
+ * Periodically checks all active alerts by calling the API in parallel.
  */
 async function checkAllAlerts() {
     const userCount = Object.keys(activeAlerts).length;
     if (userCount === 0) return;
 
     console.log(`[${new Date().toISOString()}] Running periodic check for ${userCount} user(s)...`);
+    let alertsModified = false;
 
-    // Get today's date in YYYY-MM-DD format for easy string comparison.
-    // This removes the time component, preventing timezone issues.
-    const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const dd = String(today.getDate()).padStart(2, '0');
-    const todayStr = `${yyyy}-${mm}-${dd}`;
-
+    // --- 1. Flatten all alerts from all users into a single array ---
+    const allAlerts = [];
     for (const chatId in activeAlerts) {
-        const userAlerts = activeAlerts[chatId];
-        const remainingAlerts = [];
+        activeAlerts[chatId].forEach(alert => {
+            allAlerts.push({ ...alert, chatId }); // Attach chatId to each alert for later use
+        });
+    }
 
-        for (const alert of userAlerts) {
-            // Check if the alert's date is in the past.
-            if (alert.date < todayStr) {
-                console.log(`[Cleanup] Removing expired alert for ${alert.movieName} on ${alert.date} for chat ID ${chatId}.`);
-                // By not pushing it to the remainingAlerts array, we effectively delete it.
-                continue; // Move to the next alert
-            }
+    if (allAlerts.length === 0) return;
 
-            const { movieId, movieName, date, cinemaName } = alert;
-            const showtimesResult = await findShowtimes(movieId, date, cinemaName);
-
-            if (showtimesResult && !showtimesResult.error) {
-                const message = `🚨 *TICKET ALERT!* 🚨\n\nTickets for *${movieName}* are now available at *${cinemaName}* for *${date}*!\n\nShowtimes: \`${showtimesResult.showtimes.join(' | ')}\``;
-                await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-                console.log(`Sent alert to ${chatId} for ${movieName}`);
-            } else {
-                // If the alert was not fulfilled and is not expired, keep it for the next check.
-                remainingAlerts.push(alert);
-            }
+    // --- 2. Cleanup expired alerts first ---
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const activeAndValidAlerts = allAlerts.filter(alert => {
+        if (alert.date < today) {
+            console.log(`[Cleanup] Removing expired alert for ${alert.movieName} on ${alert.date} for chat ID ${alert.chatId}.`);
+            alertsModified = true;
+            return false;
         }
+        return true;
+    });
 
-        // Update the list of active alerts for the user.
-        if (remainingAlerts.length > 0) {
-            activeAlerts[chatId] = remainingAlerts;
-        } else {
-            // If a user has no more active alerts, remove them from the alerts object.
-            delete activeAlerts[chatId];
+    // --- 3. Create an array of promises (API calls) ---
+    const promises = activeAndValidAlerts.map(alert =>
+        findShowtimes(alert.movieId, alert.date, alert.cinemaName)
+            .then(result => ({ result, alert })) // Combine result with original alert data
+            .catch(error => {
+                console.error(`API call failed for alert: ${alert.movieName}`, error);
+                return { result: null, alert }; // Return null result on failure
+            })
+    );
+
+    // --- 4. Execute all promises in parallel ---
+    const results = await Promise.all(promises);
+
+    // --- 5. Process the results ---
+    const fulfilledAlerts = new Set();
+    for (const { result, alert } of results) {
+        if (result && !result.error) {
+            const message = `🚨 *TICKET ALERT!* 🚨\n\nTickets for *${alert.movieName}* are now available at *${alert.cinemaName}* for *${alert.date}*!\n\nShowtimes: \`${result.showtimes.join(' | ')}\``;
+            await bot.sendMessage(alert.chatId, message, { parse_mode: 'Markdown' });
+            console.log(`Sent alert to ${alert.chatId} for ${alert.movieName}`);
+
+            // Mark this alert for removal
+            fulfilledAlerts.add(`${alert.chatId}-${alert.movieId}-${alert.date}-${alert.cinemaName}`);
+            alertsModified = true;
         }
+    }
+
+    // --- 6. Reconstruct the activeAlerts object, removing fulfilled alerts ---
+    if (alertsModified) {
+        const newActiveAlerts = {};
+        allAlerts.forEach(alert => {
+            const alertId = `${alert.chatId}-${alert.movieId}-${alert.date}-${alert.cinemaName}`;
+            // Keep the alert if it's not expired and was not fulfilled
+            if (alert.date >= today && !fulfilledAlerts.has(alertId)) {
+                if (!newActiveAlerts[alert.chatId]) {
+                    newActiveAlerts[alert.chatId] = [];
+                }
+                newActiveAlerts[alert.chatId].push({
+                    movieId: alert.movieId,
+                    movieName: alert.movieName,
+                    date: alert.date,
+                    cinemaName: alert.cinemaName
+                });
+            }
+        });
+        activeAlerts = newActiveAlerts;
+        await saveAlertsToFile();
     }
 }
 
-// Set an interval to run the alert checker every 15 minutes
-setInterval(checkAllAlerts, 15 * 60 * 1000);
 
-console.log("Periodic alert checker has been set up to run every 15 minutes.");
+// Immediately Invoked Function to load data and then start the interval
+(async () => {
+    await loadAlertsFromFile();
+    checkAllAlerts();
+    // Set an interval to run the alert checker every 15 minutes
+    setInterval(checkAllAlerts, 15 * 60 * 1000);
+    console.log("Periodic alert checker has been set up to run every 15 minutes.");
+})();
+
