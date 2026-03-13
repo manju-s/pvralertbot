@@ -134,19 +134,22 @@ async function findComingSoonMovie(movieName) {
  * @param {string} movieId - The ID of the movie.
  * @param {string} targetDate - The date to search for (YYYY-MM-DD).
  * @param {string} targetCinema - The name of the cinema to search for.
+ * @param {string} city - The city to search in.
  * @returns {Promise<object|null>} - An object with cinema details and showtimes, or null if not found.
  */
-async function findShowtimes(movieId, targetDate, targetCinema) {
+async function findShowtimes(movieId, targetDate, targetCinema, city = 'Bengaluru') {
     const requestBody = {
-        city: "Bengaluru",
+        city: city,
         mid: movieId,
         experience: "ALL", specialTag: "ALL", lat: "12.915336", lng: "77.373046",
         lang: "ALL", format: "ALL", dated: targetDate ? targetDate : new Date().toISOString().slice(0, 10), time: "08:00-24:00",
         cinetype: "ALL", hc: "ALL", adFree: false
     };
 
+    const headers = { ...PVR_API_HEADERS, city: city };
+
     try {
-        const response = await axios.post(`${PVR_API_BASE_URL}/msessions`, requestBody, { headers: PVR_API_HEADERS });
+        const response = await axios.post(`${PVR_API_BASE_URL}/msessions`, requestBody, { headers: headers });
         const sessions = response.data?.output?.movieCinemaSessions;
         if (!sessions || !Array.isArray(sessions)) {
             return { error: 'no_shows_on_date' };
@@ -193,21 +196,23 @@ bot.on('message', async (msg) => {
     }
 
     if (userStates[chatId] && userStates[chatId].action === 'awaiting_showtime_details') {
-        const [date, ...cinemaParts] = text.split(',');
+        const [city, date, ...cinemaParts] = text.split(',');
         const cinemaName = cinemaParts.join(',').trim();
 
-        if (!date || !cinemaName) {
-            bot.sendMessage(chatId, "❌ Invalid format. Please provide the date and cinema name separated by a comma.\n\nExample: `2025-09-23, PVR Global Mall`", { parse_mode: 'Markdown' });
+        if (!city || !date || !cinemaName) {
+            bot.sendMessage(chatId, "❌ Invalid format. Please provide the City, Date and Cinema Name separated by commas.\n\nExample: `Bengaluru, 2025-09-23, PVR Global Mall`", { parse_mode: 'Markdown' });
             return;
         }
 
         const { movieId, movieName } = userStates[chatId];
-        bot.sendMessage(chatId, `Checking showtimes for *${movieName}* at *${cinemaName}* on *${date.trim()}*...`, { parse_mode: 'Markdown' });
+        const trimmedCity = city.trim();
+        const trimmedDate = date.trim();
+        bot.sendMessage(chatId, `Checking showtimes for *${movieName}* at *${cinemaName}* in *${trimmedCity}* on *${trimmedDate}*...`, { parse_mode: 'Markdown' });
 
-        const showtimesResult = await findShowtimes(movieId, date.trim(), cinemaName);
+        const showtimesResult = await findShowtimes(movieId, trimmedDate, cinemaName, trimmedCity);
 
         if (showtimesResult && !showtimesResult.error) {
-            const message = `✅ Found shows for *${showtimesResult.cinemaName}* on *${date.trim()}*:\n\nShowtimes: \`${showtimesResult.showtimes.join(' | ')}\``;
+            const message = `✅ Found shows for *${showtimesResult.cinemaName}* in *${trimmedCity}* on *${trimmedDate}*:\n\nShowtimes: \`${showtimesResult.showtimes.join(' | ')}\``;
             bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
             delete userStates[chatId];
         } else if (showtimesResult && showtimesResult.error === 'cinema_not_found') {
@@ -215,8 +220,9 @@ bot.on('message', async (msg) => {
             delete userStates[chatId];
         } else if (showtimesResult && showtimesResult.error === 'no_shows_on_date') {
             userStates[chatId].action = 'awaiting_alert_confirmation';
-            userStates[chatId].date = date.trim();
+            userStates[chatId].date = trimmedDate;
             userStates[chatId].cinemaName = cinemaName;
+            userStates[chatId].city = trimmedCity;
 
             const options = {
                 parse_mode: 'Markdown',
@@ -227,7 +233,7 @@ bot.on('message', async (msg) => {
                     ]
                 }
             };
-            bot.sendMessage(chatId, `😔 No shows found for *${movieName}* at "${cinemaName}" on ${date.trim()}.\n\nWould you like me to notify you if tickets become available?`, options);
+            bot.sendMessage(chatId, `😔 No shows found for *${movieName}* at "${cinemaName}" in ${trimmedCity} on ${trimmedDate}.\n\nWould you like me to notify you if tickets become available?`, options);
         } else {
             bot.sendMessage(chatId, "😥 Something went wrong while fetching showtimes. Please try again later.");
             delete userStates[chatId];
@@ -340,7 +346,7 @@ bot.on('callback_query', async (callbackQuery) => {
         const dd = String(today.getDate()).padStart(2, '0');
         const exampleDate = `${yyyy}-${mm}-${dd}`;
 
-        bot.sendMessage(chatId, `Please reply with the date and the cinema name, separated by a comma.\n\n*Format:* \`YYYY-MM-DD, Cinema Name\`\n*Example:* \`${exampleDate}, PVR Forum Mall\``, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `Please reply with the City, Date and Cinema Name, separated by commas.\n\n*Format:* \`City, YYYY-MM-DD, Cinema Name\`\n*Example:* \`Bengaluru, ${exampleDate}, PVR Forum Mall\``, { parse_mode: 'Markdown' });
         bot.answerCallbackQuery(callbackQuery.id);
 
     } else if (data === 'check_coming_soon') {
@@ -389,12 +395,12 @@ bot.on('callback_query', async (callbackQuery) => {
         }
         activeAlerts[chatId].push({
             movieId: alertDetails.movieId, movieName: alertDetails.movieName,
-            date: alertDetails.date, cinemaName: alertDetails.cinemaName
+            date: alertDetails.date, cinemaName: alertDetails.cinemaName, city: alertDetails.city
         });
 
         await saveAlertsToFile(); // Save after adding an alert
 
-        bot.editMessageText(`✅ Alert set! I will notify you when tickets for *${alertDetails.movieName}* become available at *${alertDetails.cinemaName}* on *${alertDetails.date}*.`, {
+        bot.editMessageText(`✅ Alert set! I will notify you when tickets for *${alertDetails.movieName}* become available at *${alertDetails.cinemaName}* in *${alertDetails.city}* on *${alertDetails.date}*.`, {
             chat_id: chatId, message_id: msg.message_id, parse_mode: 'Markdown'
         });
         delete userStates[chatId];
@@ -442,7 +448,7 @@ async function checkAllAlerts() {
 
     // --- 3. Create an array of promises (API calls) ---
     const promises = activeAndValidAlerts.map(alert =>
-        findShowtimes(alert.movieId, alert.date, alert.cinemaName)
+        findShowtimes(alert.movieId, alert.date, alert.cinemaName, alert.city)
             .then(result => ({ result, alert })) // Combine result with original alert data
             .catch(error => {
                 console.error(`API call failed for alert: ${alert.movieName}`, error);
@@ -481,7 +487,8 @@ async function checkAllAlerts() {
                     movieId: alert.movieId,
                     movieName: alert.movieName,
                     date: alert.date,
-                    cinemaName: alert.cinemaName
+                    cinemaName: alert.cinemaName,
+                    city: alert.city
                 });
             }
         });
@@ -499,4 +506,3 @@ async function checkAllAlerts() {
     setInterval(checkAllAlerts, 15 * 60 * 1000);
     console.log("Periodic alert checker has been set up to run every 15 minutes.");
 })();
-
