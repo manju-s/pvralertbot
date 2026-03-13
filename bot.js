@@ -267,7 +267,7 @@ bot.onText(/\/check (.+)/, async (msg, match) => {
         return;
     }
 
-    await bot.sendMessage(chatId, `🔍 Searching for "${movieNameToSearch}" in Bengaluru...`);
+    await bot.sendMessage(chatId, `🔍 Searching for "${movieNameToSearch}"...`);
 
     const movieResult = await findMovie(movieNameToSearch);
 
